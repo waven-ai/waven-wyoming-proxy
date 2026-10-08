@@ -1,0 +1,11 @@
+# Home Assistant add-on build config, for building this add-on from source
+# (a fork with config.yaml's `image:` removed). With `image:` present
+# Supervisor never builds locally, so nothing here runs in the published
+# add-on. python:3.12-slim is multi-arch so the same base works for both
+# supported architectures; swap to the HA base images
+# (ghcr.io/home-assistant/{arch}-base) if you need s6/bashio.
+# Architectures track config.yaml's `arch:` — armv7 is deprecated in
+# supervisor and cannot be selected, so it is not built.
+build_from:
+  aarch64: python:3.12-slim
+  amd64: python:3.12-slim

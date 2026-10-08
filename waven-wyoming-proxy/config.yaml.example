@@ -1,0 +1,56 @@
+# Standalone (non-Home-Assistant-add-on) configuration reference.
+#
+# Two ways to configure the proxy:
+#
+# 1) As a Home Assistant add-on: set these in the add-on's Configuration tab.
+#    The Supervisor writes them to /data/options.json, which proxy.py reads.
+#
+# 2) As a plain Docker container (Rhasspy, homemade satellites, HA Core in a
+#    venv): pass the WAVEN_* environment variables shown on the right. Env vars
+#    override anything in /data/options.json.
+#
+# option              env var                     notes
+# ------------------  --------------------------  ----------------------------------
+api_key: "wvn_..."  #   WAVEN_API_KEY             required; from your Waven dashboard
+host: "https://api.waven.ai"  # WAVEN_HOST        region edge (us today)
+stt_model: auto     #   WAVEN_STT_MODEL           auto | parakeet | voxtral (batch)
+stt_language: en    #   WAVEN_STT_LANGUAGE        ISO code; voxtral covers en/fr/de/es/it/pt
+default_voice: "kokoro:af_heart"  # WAVEN_DEFAULT_VOICE  "kokoro:<id>" or "gallery:<voice_id>"
+retain_audio: true  #   WAVEN_RETAIN_AUDIO        false → each synthesized clip is deleted
+                    #                             from Waven's servers as soon as the proxy
+                    #                             has downloaded it in full; a clip that is
+                    #                             never downloaded is removed by the cleanup
+                    #                             sweep: NO_RETAIN_AUDIO_TTL_MINUTES (10) +
+                    #                             AUDIO_CLEANUP_MIN_INTERVAL_SECONDS (3600,
+                    #                             the minimum gap between sweeps) + one
+                    #                             CLEANUP_INTERVAL_SECONDS (300) tick ≈ 75 min
+                    #                             worst case at the defaults; a wedged sweep
+                    #                             is alerted at 2 h. Trade-off: a download
+                    #                             that is interrupted loses that response
+                    #                             (the clip is already gone; nothing to
+                    #                             retry). true → clips follow the standard
+                    #                             72 h cache. The STT endpoint this proxy
+                    #                             uses (POST /api/v1/stt/transcribe) never
+                    #                             stores utterance audio either way (the
+                    #                             async /stt/transcribe/jobs endpoint, which
+                    #                             this proxy does not call, does keep the
+                    #                             upload in Redis for 1 h).
+daily_cap_minutes: 30  # WAVEN_DAILY_CAP_MINUTES  hard cap per local day; 0 = unlimited
+uri: "tcp://0.0.0.0:10300"  # WAVEN_URI           Wyoming bind address
+
+# There is no audio-format option: the proxy always speaks WAV (it decodes the
+# /generate response into the raw PCM frames Wyoming streams). A leftover
+# `tts_format` / WAVEN_TTS_FORMAT is accepted and ignored, with a warning.
+#
+# Daily-cap state is persisted to /data/waven_cap.json so a restart doesn't
+# re-arm a cap the household already spent. Override with WAVEN_STATE_PATH.
+
+# --- docker run example ------------------------------------------------------
+# docker run -d --name waven-wyoming -p 10300:10300 \
+#   -e WAVEN_API_KEY=wvn_your_key_here \
+#   -e WAVEN_DEFAULT_VOICE=kokoro:af_heart \
+#   -e WAVEN_DAILY_CAP_MINUTES=30 \
+#   ghcr.io/waven-ai/waven-wyoming-proxy:latest
+#
+# Then in Home Assistant: Settings → Devices & Services → Add Integration →
+# Wyoming Protocol → host=<docker host ip>, port=10300.

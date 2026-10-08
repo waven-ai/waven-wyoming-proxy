@@ -1,0 +1,122 @@
+name: Build image
+
+# Runs on the PUBLIC GitHub mirror of the Wyoming proxy
+# (waven-ai/waven-wyoming-proxy). That mirror is a Home Assistant add-on
+# REPOSITORY: `repository.yaml` at its root and the add-on itself in a
+# `waven-wyoming-proxy/` subdirectory (the layout Supervisor needs to offer a
+# one-click install). scripts/ha-mirror/publish.sh hoists this file out of the
+# add-on directory into the mirror's ROOT `.github/workflows/`, because GitHub
+# Actions only reads root workflows — so every path below is relative to the
+# MIRROR ROOT, not to the directory this file sits in in the monorepo. Inert in
+# the monorepo itself for that same root-only reason.
+#
+# Builds the multi-arch image the HA add-on (config.yaml `image:`) and the
+# docker-run docs reference: ghcr.io/waven-ai/waven-wyoming-proxy. The base
+# (python:3.12-slim) is itself multi-arch, so buildx needs no per-arch base.
+
+on:
+  # TAGS ONLY. publish.sh pushes both `main` and `v<version>` for a release; a
+  # `branches: [main]` trigger meant every publish started two identical
+  # three-arch QEMU builds racing to write the same tags. The tag run is the
+  # one that matters (it is the one whose version is asserted below), so it
+  # publishes `latest` too.
+  push:
+    tags: ["v*"]
+  # Manual re-runs — a base-image CVE rebuild, say. Select a `v*` TAG as the
+  # ref: from a branch there is no version to publish the image under, and the
+  # guard below stops the run before it burns 40 minutes discovering that.
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse a run that is not on a v* tag
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          echo "::error::This workflow publishes <image>:<version> from a v* tag. Re-run it with a tag selected as the ref." >&2
+          exit 1
+      # config.yaml's `version:` IS the tag Supervisor pulls: it fetches
+      # `<image>:<version>`. If the two ever disagree, the add-on store offers
+      # an update that resolves to a tag nobody pushed and the pull 404s on
+      # every user's box. Fail the build here instead.
+      - name: Assert config.yaml version matches the git tag
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          # Read the scalar in Python, not sed: a sed that only understood
+          # double quotes read `version: '0.1.1'` as the literal seven
+          # characters `'0.1.1'`, and a trailing `# comment` yielded nothing.
+          # Both mismatch a correct tag and fail an otherwise valid release.
+          config_version="$(python3 - <<'PY'
+          import re
+          raw = ""
+          for line in open("waven-wyoming-proxy/config.yaml", encoding="utf-8"):
+              m = re.match(r'^version:[ \t]*(.*)$', line)
+              if m:
+                  raw = m.group(1).rstrip()
+                  break
+          if raw[:1] in ("'", '"'):
+              end = raw.find(raw[0], 1)
+              print(raw[1:end] if end > 0 else raw[1:])
+          else:
+              print(raw.split("#", 1)[0].strip())
+          PY
+          )"
+          echo "git tag: ${GITHUB_REF_NAME} (version ${tag_version})"
+          echo "config.yaml version: ${config_version}"
+          if ! printf '%s' "$config_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::config.yaml version '${config_version}' is not a bare MAJOR.MINOR.PATCH; Supervisor would pull a tag the registry cannot carry." >&2
+            exit 1
+          fi
+          if [ "$tag_version" != "$config_version" ]; then
+            echo "::error::config.yaml version '${config_version}' does not match tag '${GITHUB_REF_NAME}'. Supervisor pulls <image>:${config_version}, which this build would not publish." >&2
+            exit 1
+          fi
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/waven-ai/waven-wyoming-proxy
+          tags: |
+            # `latest` used to come from the (now removed) branch trigger.
+            # It comes from the tag run instead, so a release is one build.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # semver, NOT `type=ref,event=tag`: the git tag is `v0.1.0`, so
+            # ref/tag published `:v0.1.0` while config.yaml's `version: "0.1.0"`
+            # makes Supervisor pull `:0.1.0` — a tag that never existed, so
+            # every add-on install and update failed on the image pull.
+            # {{version}} strips the leading `v`; {{major}}.{{minor}} is a
+            # convenience alias and is not what Supervisor resolves.
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # No `type=sha`: publish.sh force-pushes this mirror's history
+            # every release, so a commit-sha tag names a package version whose
+            # commit no longer exists in the repository.
+      - uses: docker/build-push-action@v6
+        with:
+          # The add-on directory, not the repository root: the root now holds
+          # repository.yaml and the add-on lives one level down.
+          context: ./waven-wyoming-proxy
+          # No linux/arm/v7: armv7 is in supervisor's ARCH_DEPRECATED and is
+          # not a member of its CpuArch enum, so no Supervisor can ever select
+          # that leg — it was pure emulated build time for a manifest entry
+          # nobody pulls. Keep it in step with config.yaml's `arch:`.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Three-arch QEMU builds are 15-40 minutes cold. The layer cache
+          # makes a re-run (or a version bump that only touches config.yaml)
+          # minutes instead.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
