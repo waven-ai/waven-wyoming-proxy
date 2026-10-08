@@ -1,0 +1,59 @@
+# Home Assistant add-on manifest. Drop this directory into your Supervisor
+# add-on store (or a custom add-on repo) and it appears as "Waven Wyoming Proxy".
+name: Waven Wyoming Proxy
+version: "0.2.0"
+slug: waven_wyoming_proxy
+description: >-
+  Hosted Waven speech-to-text and text-to-speech for Home Assistant, exposed
+  over the Wyoming protocol. Keeps wake word, VAD and intents local; only the
+  spoken utterance and the response text reach Waven.
+url: https://github.com/waven-ai/waven-wyoming-proxy
+# Pull the prebuilt multi-arch image (built + pushed by
+# .github/workflows/build-image.yml) instead of building on the user's device —
+# an emulated build on a Raspberry Pi is painfully slow. Supervisor pulls
+# `<image>:<version>`; the registry tag is a manifest list so the daemon picks
+# the right architecture.
+#
+# `image:` is not a fallback, it is a switch: Supervisor's `need_build` is a
+# pure presence check on this key, so with it set the local Dockerfile /
+# build.yaml path is never taken. They are kept for someone building the
+# add-on from a fork with `image:` removed, not as an automatic backstop.
+image: "ghcr.io/waven-ai/waven-wyoming-proxy"
+# No armv7: it is in supervisor's ARCH_DEPRECATED and is not a member of its
+# CpuArch enum, so no Supervisor can select that leg. Advertising it only
+# earned a deprecation warning and a fully-emulated build nobody pulls. Keep
+# this list in step with build-image.yml's `platforms:`.
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+# Wyoming endpoint: add it in HA via Settings → Devices & Services → Wyoming
+# Protocol → host = this add-on, port = 10300. One endpoint serves STT + TTS.
+ports:
+  "10300/tcp": 10300
+ports_description:
+  "10300/tcp": Wyoming protocol (STT + TTS)
+# There is deliberately no output-format option: the proxy always requests WAV
+# from /api/v1/generate because it decodes the response to the raw PCM frames
+# Wyoming streams. A legacy `tts_format` key is accepted and ignored (with a
+# warning in the add-on log) rather than silently pretending it applied.
+options:
+  api_key: ""
+  host: "https://api.waven.ai"
+  stt_model: auto
+  stt_language: en
+  default_voice: "kokoro:af_heart"
+  retain_audio: true
+  # Safety rail, matching the custom integration's default: a stuck microphone
+  # must not be able to drain an account. Set to 0 to disable.
+  daily_cap_minutes: 30
+schema:
+  api_key: password
+  host: url
+  stt_model: "list(auto|parakeet|voxtral)"
+  stt_language: str
+  default_voice: str
+  retain_audio: bool
+  daily_cap_minutes: "int(0,1440)"
